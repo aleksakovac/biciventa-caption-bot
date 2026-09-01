@@ -10,7 +10,7 @@ import os
 from google import genai
 from google.genai import types
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 _client = None
 
@@ -160,8 +160,13 @@ def generar_caption(texto_usuario: str) -> str:
         contents=f"Datos de la bici (tal cual los mandó el vendedor):\n\n{texto_usuario}",
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
-            max_output_tokens=1200,
+            max_output_tokens=3000,
             temperature=0.7,
+            # Modelos "thinking" (como gemini-3.x) gastan parte del presupuesto de
+            # salida en razonamiento interno antes de escribir la respuesta visible.
+            # Lo desactivamos para que todo el presupuesto vaya al caption final y
+            # no se corte a mitad de camino.
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
     texto = (response.text or "").strip()
