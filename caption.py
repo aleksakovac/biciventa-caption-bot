@@ -160,13 +160,13 @@ def generar_caption(texto_usuario: str) -> str:
         contents=f"Datos de la bici (tal cual los mandó el vendedor):\n\n{texto_usuario}",
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
-            max_output_tokens=3000,
-            temperature=0.7,
             # Modelos "thinking" (como gemini-3.x) gastan parte del presupuesto de
-            # salida en razonamiento interno antes de escribir la respuesta visible.
-            # Lo desactivamos para que todo el presupuesto vaya al caption final y
-            # no se corte a mitad de camino.
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
+            # salida en razonamiento interno antes de escribir la respuesta visible,
+            # así que dejamos bastante margen para que el caption final no se corte
+            # a mitad de camino. (thinking_budget=0 no es válido para este modelo,
+            # así que no lo tocamos y confiamos en el margen extra.)
+            max_output_tokens=8192,
+            temperature=0.7,
         ),
     )
     texto = (response.text or "").strip()
