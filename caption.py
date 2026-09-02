@@ -4,23 +4,67 @@ Lógica de generación de captions para @bici.venta.
 Toma el mensaje libre que Aleksa manda por Telegram con los datos de una
 bici y devuelve el caption completo, listo para copiar y pegar en Instagram,
 siguiendo el formato real de la cuenta.
+
+Soporta dos proveedores de IA intercambiables por variable de entorno
+(AI_PROVIDER), pensado para poder comparar resultados sin tocar lo que ya
+funciona en producción:
+
+- "gemini" (default — el que ya usa el bot en producción): Google AI
+  Studio, tier gratuito, modelo `gemini-3.6-flash`. Tarda ~20-30s.
+- "groq": Groq Cloud (console.groq.com), también gratis, corre modelos
+  abiertos (por defecto `openai/gpt-oss-120b`) en hardware propio (LPUs) y
+  suele responder en 1-3 segundos en vez de 20-30. La contra: no es un
+  modelo propietario tipo Gemini/GPT/Claude, así que conviene comparar la
+  calidad del caption unos días antes de migrar el bot de verdad.
+
+Para probar Groq sin tocar producción: conseguir una API key gratis en
+console.groq.com/keys y, en las variables de entorno de Render, agregar
+GROQ_API_KEY y AI_PROVIDER=groq. Sin esas dos variables, el bot sigue
+usando Gemini exactamente como antes. Ver README.md para más detalle.
 """
 
 import os
-from google import genai
-from google.genai import types
+import time
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "gemini").strip().lower()
 
-_client = None
+REINTENTOS_ANTE_ERROR_SERVIDOR = 2  # 1 intento + 1 reintento
+ESPERA_ENTRE_REINTENTOS_SEG = 3
 
 
-def _get_client() -> genai.Client:
-    global _client
-    if _client is None:
+class IARateLimitError(RuntimeError):
+    """El proveedor de IA devolvió un error de cuota/rate limit (429)."""
+
+
+class IAIndisponibleError(RuntimeError):
+    """El proveedor de IA falló repetidamente por un error de servidor
+    (5xx), incluso después de reintentar."""
+
+
+_gemini_client = None
+_groq_client = None
+
+
+def _get_gemini_client():
+    global _gemini_client
+    if _gemini_client is None:
+        from google import genai
+
         api_key = os.environ["GEMINI_API_KEY"]
-        _client = genai.Client(api_key=api_key)
-    return _client
+        _gemini_client = genai.Client(api_key=api_key)
+    return _gemini_client
+
+
+def _get_groq_client():
+    global _groq_client
+    if _groq_client is None:
+        from groq import Groq
+
+        api_key = os.environ["GROQ_API_KEY"]
+        _groq_client = Groq(api_key=api_key)
+    return _groq_client
 
 
 # Ejemplos reales tomados del feed de @bici.venta (agosto 2026), usados como
@@ -152,24 +196,108 @@ comillas envolventes, sin markdown extra."""
 
 
 def generar_caption(texto_usuario: str) -> str:
-    """Llama a la API de Gemini para generar el caption a partir del mensaje
-    libre que mandó el usuario por Telegram."""
-    client = _get_client()
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=f"Datos de la bici (tal cual los mandó el vendedor):\n\n{texto_usuario}",
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            # Modelos "thinking" (como gemini-3.x) gastan parte del presupuesto de
-            # salida en razonamiento interno antes de escribir la respuesta visible,
-            # así que dejamos bastante margen para que el caption final no se corte
-            # a mitad de camino. (thinking_budget=0 no es válido para este modelo,
-            # así que no lo tocamos y confiamos en el margen extra.)
-            max_output_tokens=8192,
-            temperature=0.7,
-        ),
+    """Genera el caption con el proveedor de IA configurado en AI_PROVIDER
+    ("gemini" por default, o "groq")."""
+    if AI_PROVIDER == "groq":
+        return _generar_caption_groq(texto_usuario)
+    if AI_PROVIDER == "gemini":
+        return _generar_caption_gemini(texto_usuario)
+    raise RuntimeError(
+        f"AI_PROVIDER='{AI_PROVIDER}' no reconocido (usa 'gemini' o 'groq')"
     )
-    texto = (response.text or "").strip()
-    if not texto:
-        raise RuntimeError("Gemini no devolvió texto (revisa response.candidates / safety blocks)")
-    return texto
+
+
+def _generar_caption_gemini(texto_usuario: str) -> str:
+    """Llama a la API de Gemini para generar el caption a partir del mensaje
+    libre que mandó el usuario por Telegram.
+
+    Reintenta una vez si Gemini falla por un error transitorio del servidor
+    (5xx) — el tier gratuito a veces devuelve un 503 puntual bajo carga.
+    Si el error es 429 (cuota/rate limit) no tiene sentido reintentar: se
+    avisa de una vez con un mensaje claro.
+    """
+    from google.genai import errors as genai_errors
+    from google.genai import types
+
+    client = _get_gemini_client()
+    contents = f"Datos de la bici (tal cual los mandó el vendedor):\n\n{texto_usuario}"
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        # Modelos "thinking" (como gemini-3.x) gastan parte del presupuesto de
+        # salida en razonamiento interno antes de escribir la respuesta visible,
+        # así que dejamos bastante margen para que el caption final no se corte
+        # a mitad de camino. (thinking_budget=0 no es válido para este modelo,
+        # así que no lo tocamos y confiamos en el margen extra.)
+        max_output_tokens=8192,
+        temperature=0.7,
+    )
+
+    ultimo_error_servidor = None
+    for intento in range(1, REINTENTOS_ANTE_ERROR_SERVIDOR + 1):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL, contents=contents, config=config,
+            )
+        except genai_errors.APIError as e:
+            if e.code == 429:
+                raise IARateLimitError(str(e)) from e
+            if e.code and e.code >= 500:
+                ultimo_error_servidor = e
+                if intento < REINTENTOS_ANTE_ERROR_SERVIDOR:
+                    time.sleep(ESPERA_ENTRE_REINTENTOS_SEG)
+                    continue
+                raise IAIndisponibleError(str(e)) from e
+            raise
+        else:
+            texto = (response.text or "").strip()
+            if not texto:
+                raise RuntimeError(
+                    "Gemini no devolvió texto (revisa response.candidates / safety blocks)"
+                )
+            return texto
+
+    # No debería llegar acá, pero por las dudas:
+    raise IAIndisponibleError(str(ultimo_error_servidor))
+
+
+def _generar_caption_groq(texto_usuario: str) -> str:
+    """Llama a la API de Groq (chat completions estilo OpenAI) para generar
+    el caption. Misma política de reintentos que Gemini: 1 reintento ante
+    5xx, sin reintentar ante 429 (cuota)."""
+    from groq import APIStatusError
+
+    client = _get_groq_client()
+    mensajes = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": f"Datos de la bici (tal cual los mandó el vendedor):\n\n{texto_usuario}",
+        },
+    ]
+
+    ultimo_error_servidor = None
+    for intento in range(1, REINTENTOS_ANTE_ERROR_SERVIDOR + 1):
+        try:
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=mensajes,
+                temperature=0.7,
+                max_completion_tokens=2048,
+            )
+        except APIStatusError as e:
+            if e.status_code == 429:
+                raise IARateLimitError(str(e)) from e
+            if e.status_code >= 500:
+                ultimo_error_servidor = e
+                if intento < REINTENTOS_ANTE_ERROR_SERVIDOR:
+                    time.sleep(ESPERA_ENTRE_REINTENTOS_SEG)
+                    continue
+                raise IAIndisponibleError(str(e)) from e
+            raise
+        else:
+            texto = (response.choices[0].message.content or "").strip()
+            if not texto:
+                raise RuntimeError("Groq no devolvió texto")
+            return texto
+
+    raise IAIndisponibleError(str(ultimo_error_servidor))
