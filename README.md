@@ -110,6 +110,51 @@ post de Instagram (junto con las fotos que subas tú directamente ahí).
   (con las fotos) lo sigues haciendo tú a mano, como siempre.
 - No guarda historial ni base de datos: cada mensaje se procesa solo, sin
   memoria de mensajes anteriores.
+- Apenas le mandas los datos de una bici, el bot responde de una con un
+  aviso ("🕐 Generando tu caption, dame unos segundos...") y después manda
+  el caption — así no parece colgado mientras Gemini genera (20-30s
+  normalmente, hasta 50s si Render venía dormido).
+- Si Gemini falla por un error puntual del servidor (5xx), el bot reintenta
+  una vez automáticamente antes de avisarte. Si el error es por límite de
+  cuota (429), no reintenta — te avisa de una vez que esperes un momento.
+- La generación corre en segundo plano: el webhook le responde "ok" a
+  Telegram de inmediato y el aviso + el caption se mandan aparte. Esto evita
+  que Telegram, al no recibir respuesta rápido, reintente el mismo mensaje
+  y termine generando (y mandando) el caption duplicado. Como refuerzo, el
+  bot también recuerda los últimos `update_id` procesados y ignora repetidos.
+- Si un caption saliera más largo que el límite de Telegram (4096
+  caracteres), se manda partido en varios mensajes en vez de fallar.
+
+## Probar Groq en vez de Gemini (opcional, sin arriesgar lo que ya funciona)
+
+El bot soporta un segundo proveedor de IA: **Groq**. Hace exactamente lo
+mismo (mismo prompt, mismo formato), pero corre en hardware especializado
+para inferencia rápida y suele responder en **1-3 segundos** en vez de los
+20-30s de Gemini — la contra es que usa un modelo abierto (no propietario
+como Gemini), así que conviene comparar la calidad del caption antes de
+dejarlo como el proveedor de siempre.
+
+Es 100% opcional y no toca nada de lo que ya anda: mientras no configures
+`AI_PROVIDER=groq`, el bot sigue usando Gemini exactamente igual que hasta
+ahora.
+
+1. Crea una cuenta gratis en [console.groq.com](https://console.groq.com)
+   (no pide tarjeta) y saca una API key en **API Keys → Create API Key**.
+2. En las variables de **Environment** de Render, agrega:
+   - `GROQ_API_KEY` → la key que sacaste.
+   - `AI_PROVIDER` → `groq`.
+3. Guarda los cambios — Render redeploya solo con las nuevas variables.
+4. Mándale al bot los mismos datos de bici que le mandarías siempre y
+   compará el caption contra los que te da Gemini.
+
+Para volver a Gemini en cualquier momento: borra `AI_PROVIDER` (o ponlo en
+`gemini`) en las variables de Render. No hace falta tocar código ni volver
+a desplegar nada distinto.
+
+Por defecto usa el modelo `openai/gpt-oss-120b` de Groq (el insignia
+gratuito). Si querés probar otro modelo del catálogo de Groq, se puede
+fijar con la variable opcional `GROQ_MODEL` (ver `console.groq.com/docs/models`
+para la lista vigente).
 
 ## Ajustar el estilo más adelante
 
@@ -128,3 +173,6 @@ más ejemplos reales tuyos para afinar el tono.
   cubrir de sobra el volumen de posts de la cuenta). Puedes revisar tu uso en
   aistudio.google.com → Usage, y los límites/tiers vigentes en
   ai.google.dev/gemini-api/docs/pricing.
+- Groq (si lo activas): $0 en el tier gratuito, con un límite de ~1.000
+  mensajes/día en los modelos recomendados — muy por encima del volumen de
+  la cuenta. Límites vigentes en console.groq.com/docs/rate-limits.
