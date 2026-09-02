@@ -9,7 +9,7 @@ os.environ.setdefault("WEBHOOK_SECRET", "sekret123")
 os.environ.setdefault("GEMINI_API_KEY", "fake-key")
 
 import app  # noqa: E402
-from caption import IAIndisponibleError, IARateLimitError  # noqa: E402
+from caption import IAIndisponibleError, IARateLimitError, IARespuestaVaciaError  # noqa: E402
 
 
 def fake_generar_caption(texto):
@@ -124,6 +124,18 @@ def main():
         ultimo_mensaje = mock_post.call_args_list[-1].kwargs["json"]["text"]
         assert "temporalmente saturada" in ultimo_mensaje
         print("OK Gemini caído tras reintentos avisa con mensaje específico")
+
+    # Gemini devuelve respuesta vacía tras reintentar (ej. se quedó sin
+    # presupuesto de "thinking") -> mensaje específico, no el genérico
+    with patch("app.generar_caption", side_effect=IARespuestaVaciaError("finish_reason=MAX_TOKENS")), \
+         patch("app.requests.post") as mock_post:
+        mock_post.return_value.raise_for_status = lambda: None
+        r = client.post(f"/webhook/sekret123", json=build_update("Trek Marlin 5, 2022, talla M", update_id=6))
+        assert r.status_code == 200
+        esperar_hilo_en_segundo_plano()
+        ultimo_mensaje = mock_post.call_args_list[-1].kwargs["json"]["text"]
+        assert "no se pudo generar completo" in ultimo_mensaje
+        print("OK respuesta vacía de la IA avisa con mensaje específico (no el genérico)")
 
     # ALLOWED_USER_IDS bloquea usuarios no autorizados
     app.ALLOWED_USER_IDS = {"1"}

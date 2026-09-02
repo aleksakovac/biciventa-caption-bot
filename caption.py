@@ -43,6 +43,14 @@ class IAIndisponibleError(RuntimeError):
     (5xx), incluso después de reintentar."""
 
 
+class IARespuestaVaciaError(RuntimeError):
+    """El proveedor de IA respondió sin texto (respuesta vacía), incluso
+    después de reintentar. Suele pasar cuando un modelo "thinking" gasta
+    todo su presupuesto de salida razonando internamente y no le queda
+    espacio para escribir la respuesta visible, o cuando la respuesta fue
+    bloqueada por un filtro de seguridad."""
+
+
 _gemini_client = None
 _groq_client = None
 
@@ -291,13 +299,17 @@ def _generar_caption_gemini(texto_usuario: str) -> str:
         # Modelos "thinking" (como gemini-3.x) gastan parte del presupuesto de
         # salida en razonamiento interno antes de escribir la respuesta visible,
         # así que dejamos bastante margen para que el caption final no se corte
-        # a mitad de camino. (thinking_budget=0 no es válido para este modelo,
-        # así que no lo tocamos y confiamos en el margen extra.)
-        max_output_tokens=8192,
+        # a mitad de camino de "datos mínimos" (completar specs con
+        # la config de fábrica del modelo) le pide al modelo razonar más que
+        # antes, así que subimos el presupuesto para darle espacio de sobra.
+        # (thinking_budget=0 no es válido para este modelo, así que no lo
+        # tocamos y confiamos en el margen extra.)
+        max_output_tokens=16384,
         temperature=0.7,
     )
 
     ultimo_error_servidor = None
+    ultimo_finish_reason = None
     for intento in range(1, REINTENTOS_ANTE_ERROR_SERVIDOR + 1):
         try:
             response = client.models.generate_content(
@@ -315,14 +327,30 @@ def _generar_caption_gemini(texto_usuario: str) -> str:
             raise
         else:
             texto = (response.text or "").strip()
-            if not texto:
-                raise RuntimeError(
-                    "Gemini no devolvió texto (revisa response.candidates / safety blocks)"
-                )
-            return texto
+            if texto:
+                return texto
+
+            # Respuesta vacía: puede ser que el modelo gastó todo el
+            # presupuesto pensando (finish_reason MAX_TOKENS) o que un
+            # filtro de seguridad bloqueó la respuesta. En ambos casos vale
+            # la pena reintentar una vez (con temperature>0 el resultado no
+            # es determinístico) antes de avisarle al usuario.
+            try:
+                ultimo_finish_reason = response.candidates[0].finish_reason
+            except (AttributeError, IndexError, TypeError):
+                ultimo_finish_reason = None
+            if intento < REINTENTOS_ANTE_ERROR_SERVIDOR:
+                time.sleep(ESPERA_ENTRE_REINTENTOS_SEG)
+                continue
+            raise IARespuestaVaciaError(
+                f"Gemini no devolvió texto tras {REINTENTOS_ANTE_ERROR_SERVIDOR} intentos "
+                f"(finish_reason={ultimo_finish_reason})"
+            )
 
     # No debería llegar acá, pero por las dudas:
-    raise IAIndisponibleError(str(ultimo_error_servidor))
+    if ultimo_error_servidor is not None:
+        raise IAIndisponibleError(str(ultimo_error_servidor))
+    raise IARespuestaVaciaError(f"Gemini no devolvió texto (finish_reason={ultimo_finish_reason})")
 
 
 def _generar_caption_groq(texto_usuario: str) -> str:
@@ -362,7 +390,7 @@ def _generar_caption_groq(texto_usuario: str) -> str:
         else:
             texto = (response.choices[0].message.content or "").strip()
             if not texto:
-                raise RuntimeError("Groq no devolvió texto")
+                raise IARespuestaVaciaError("Groq no devolvió texto")
             return texto
 
     raise IAIndisponibleError(str(ultimo_error_servidor))

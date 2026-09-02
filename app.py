@@ -16,7 +16,7 @@ from collections import deque
 import requests
 from flask import Flask, request
 
-from caption import IAIndisponibleError, IARateLimitError, generar_caption
+from caption import IAIndisponibleError, IARateLimitError, IARespuestaVaciaError, generar_caption
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("biciventa-caption-bot")
@@ -114,6 +114,15 @@ def _generar_y_responder(chat_id, texto):
     except IAIndisponibleError:
         log.warning("Proveedor de IA no disponible tras reintentos (chat_id=%s)", chat_id)
         enviar_mensaje(chat_id, "La IA está temporalmente saturada. Intenta de nuevo en un minuto.")
+        return
+    except IARespuestaVaciaError as e:
+        log.warning("La IA no devolvió texto tras reintentar (chat_id=%s): %s", chat_id, e)
+        enviar_mensaje(
+            chat_id,
+            "El caption no se pudo generar completo (probablemente por lo complejo del pedido). "
+            "Intenta de nuevo — si vuelve a pasar, prueba mandando también las specs que conozcas "
+            "en vez de solo marca/modelo/talla/año.",
+        )
         return
     except Exception:
         log.exception("Fallo generando el caption (chat_id=%s)", chat_id)
