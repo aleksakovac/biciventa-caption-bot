@@ -299,7 +299,7 @@ def _generar_caption_gemini(texto_usuario: str) -> str:
         # Modelos "thinking" (como gemini-3.x) gastan parte del presupuesto de
         # salida en razonamiento interno antes de escribir la respuesta visible,
         # así que dejamos bastante margen para que el caption final no se corte
-        # a mitad de camino de "datos mínimos" (completar specs con
+        # a mitad de camino. El caso de "datos mínimos" (completar specs con
         # la config de fábrica del modelo) le pide al modelo razonar más que
         # antes, así que subimos el presupuesto para darle espacio de sobra.
         # (thinking_budget=0 no es válido para este modelo, así que no lo
