@@ -104,8 +104,8 @@ post de Instagram (junto con las fotos que subas tú directamente ahí).
 - `app.py` — servidor Flask que recibe los mensajes de Telegram vía webhook
   y responde.
 - `caption.py` — arma el prompt con el formato exacto de @bici.venta
-  (incluye 2 ejemplos reales tomados del feed) y llama a la API de Gemini
-  para generar el caption.
+  (incluye 2 ejemplos reales tomados del feed + 1 ejemplo del caso de datos
+  mínimos) y llama a la API de Gemini para generar el caption.
 - El bot NO toca Instagram para nada — solo te da el texto. Publicar el post
   (con las fotos) lo sigues haciendo tú a mano, como siempre.
 - No guarda historial ni base de datos: cada mensaje se procesa solo, sin
@@ -121,9 +121,17 @@ post de Instagram (junto con las fotos que subas tú directamente ahí).
   Telegram de inmediato y el aviso + el caption se mandan aparte. Esto evita
   que Telegram, al no recibir respuesta rápido, reintente el mismo mensaje
   y termine generando (y mandando) el caption duplicado. Como refuerzo, el
-  bot también recuerda los últimos `update_id` procesados y ignora repetidos.
+  bot también recuerda los últimos `update_id` procesados e ignora repetidos.
 - Si un caption saliera más largo que el límite de Telegram (4096
   caracteres), se manda partido en varios mensajes en vez de fallar.
+- Si le mandas SOLO marca, modelo, año y/o talla (sin detallar componentes
+  como suspensión, frenos, transmisión, etc.), el bot completa los specs
+  faltantes con la configuración de fábrica (stock) real de ese modelo y
+  año. Si mencionas algún upgrade puntual (ej. "le cambiaron la suspensión a
+  Fox 34"), ese dato manda sobre el de fábrica solo en ese campo — el resto
+  se sigue completando con specs de fábrica. Si en cambio le das una lista de
+  specs (aunque sea corta), el bot usa solo esos datos y no completa nada más
+  (comportamiento de siempre).
 
 ## Probar Groq en vez de Gemini (opcional, sin arriesgar lo que ya funciona)
 
